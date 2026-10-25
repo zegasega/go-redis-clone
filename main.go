@@ -1,30 +1,33 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
 )
 
-type Val struct {
-	key       string
+type item struct {
 	value     string
-	ttl       time.Duration
 	expiresAt time.Time
 }
 
 type Storage struct {
 	mu     sync.RWMutex
-	Values map[string]Val
+	values map[string]item
+	cancel context.CancelFunc
 }
 
 func NewInMemoryStorage(interval time.Duration) *Storage {
+
+	ctx, cancel := context.WithCancel(context.Background())
 	s := &Storage{
-		Values: make(map[string]Val),
+		values: make(map[string]item),
+		cancel: cancel,
 	}
 
 	if interval > 0 {
-		go s.Cleaner(interval)
+		go s.Cleaner(ctx, interval)
 	}
 
 	return s
@@ -32,21 +35,29 @@ func NewInMemoryStorage(interval time.Duration) *Storage {
 
 func (s *Storage) Get(key string) (bool, string) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	val, exists := s.Values[key]
+	val, exists := s.values[key]
 
 	if !exists {
+		s.mu.RUnlock()
 		return false, "Key does not exist"
 	}
 
 	if !val.expiresAt.IsZero() && time.Now().After(val.expiresAt) {
+		s.mu.RUnlock()
+
+		s.mu.Lock()
+		if current, ok := s.values[key]; ok && !current.expiresAt.IsZero() && time.Now().After(current.expiresAt) {
+			delete(s.values, key)
+		}
+		s.mu.Unlock()
+
 		return false, "Key has expired"
 	}
+	s.mu.RUnlock()
 	return true, val.value
 }
 
-func (s *Storage) Set(key, value string, ttl time.Duration) (bool, string) {
+func (s *Storage) Set(key, value string, ttl time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -54,59 +65,77 @@ func (s *Storage) Set(key, value string, ttl time.Duration) (bool, string) {
 	if ttl > 0 {
 		expiresAt = time.Now().Add(ttl)
 	}
-	s.Values[key] = Val{
-		key:       key,
+	s.values[key] = item{
 		value:     value,
-		ttl:       ttl,
 		expiresAt: expiresAt,
 	}
-	return true, "OK!"
 }
 
-func (s *Storage) Delete(key string) (bool, string) {
+func (s *Storage) Delete(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	val, exists := s.Values[key]
+	val, exists := s.values[key]
 	if !exists {
-		return false, "Key does not exist"
+		return false
 	}
+
+	delete(s.values, key)
 
 	if !val.expiresAt.IsZero() && time.Now().After(val.expiresAt) {
-		delete(s.Values, key)
-		return false, "Key has expired"
+		return false
 	}
 
-	delete(s.Values, key)
-	return true, "deleted"
+	return true
 }
 
-func (s *Storage) Cleaner(interval time.Duration) {
+func (s *Storage) pruneExpried() {
+	now := time.Now()
+	s.mu.RLock()
+
+	var expriedKeys []string
+
+	for k, v := range s.values {
+		if !v.expiresAt.IsZero() && now.After(v.expiresAt) {
+			expriedKeys = append(expriedKeys, k)
+		}
+	}
+	s.mu.RUnlock()
+
+	if len(expriedKeys) == 0 {
+		return
+
+	}
+
+	s.mu.Lock()
+	for _, key := range expriedKeys {
+		if !s.values[key].expiresAt.IsZero() && time.Now().After(s.values[key].expiresAt) {
+			delete(s.values, key)
+		}
+	}
+	s.mu.Unlock()
+
+}
+
+func (s *Storage) Cleaner(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		s.mu.Lock()
-		now := time.Now()
-		for key, val := range s.Values {
-			if !val.expiresAt.IsZero() && now.After(val.expiresAt) {
-				delete(s.Values, key)
-			}
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("Cleaner Stopped!")
+			return
+		case <-ticker.C:
+			s.pruneExpried()
 		}
-		s.mu.Unlock()
 	}
 }
 
 func main() {
 	storage := NewInMemoryStorage(1 * time.Second)
-
-	storage.Set("hello", "world", 3*time.Second)
-
-	found, val := storage.Get("hello")
-	fmt.Printf("Get -> Found: %v, Value: %s\n", found, val)
-
-	time.Sleep(4 * time.Second)
-
-	x, val := storage.Get("hello")
-	fmt.Printf("Get (After TTL) -> Found: %v, Message: %s\n", x, val)
+	defer storage.cancel()
+	storage.Set("token", "abc123", 2*time.Second)
+	time.Sleep(time.Second * 3)
+	storage.Get("token")
 }

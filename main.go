@@ -18,10 +18,16 @@ type Storage struct {
 	Values map[string]Val
 }
 
-func NewInMemoryStorage() *Storage {
-	return &Storage{
+func NewInMemoryStorage(interval time.Duration) *Storage {
+	s := &Storage{
 		Values: make(map[string]Val),
 	}
+
+	if interval > 0 {
+		go s.Cleaner(interval)
+	}
+
+	return s
 }
 
 func (s *Storage) Get(key string) (bool, string) {
@@ -75,16 +81,32 @@ func (s *Storage) Delete(key string) (bool, string) {
 	return true, "deleted"
 }
 
-func main() {
-	storage := NewInMemoryStorage()
+func (s *Storage) Cleaner(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
-	storage.Set("hello", "world", 5*time.Second)
+	for range ticker.C {
+		s.mu.Lock()
+		now := time.Now()
+		for key, val := range s.Values {
+			if !val.expiresAt.IsZero() && now.After(val.expiresAt) {
+				delete(s.Values, key)
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
+func main() {
+	storage := NewInMemoryStorage(1 * time.Second)
+
+	storage.Set("hello", "world", 3*time.Second)
 
 	found, val := storage.Get("hello")
 	fmt.Printf("Get -> Found: %v, Value: %s\n", found, val)
 
-	storage.Delete("hello")
+	time.Sleep(4 * time.Second)
 
 	x, val := storage.Get("hello")
-	fmt.Printf("Get -> Found: %v, Value: %s\n", x, val)
+	fmt.Printf("Get (After TTL) -> Found: %v, Message: %s\n", x, val)
 }

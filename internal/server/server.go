@@ -46,7 +46,6 @@ func NewTCPServer(config Config) *TCPServer {
 		shards[i] = &Shard{
 			items: make(map[string]*Item),
 		}
-
 	}
 
 	return &TCPServer{
@@ -79,6 +78,7 @@ func (s *Shard) cleanSample() (checked, expired int) {
 
 	return checked, expired
 }
+
 func (s *Shard) startCleaner(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -97,6 +97,7 @@ func (s *Shard) startCleaner(ctx context.Context, interval time.Duration) {
 		}
 	}
 }
+
 func (s *TCPServer) startCleaner() {
 	interval := s.config.CleanerInterval
 
@@ -104,21 +105,11 @@ func (s *TCPServer) startCleaner() {
 		interval = 5 * time.Second
 	}
 
-	ticker := time.NewTicker(interval)
+	ctx := context.Background()
 
-	go func() {
-		defer ticker.Stop()
-
-		for range ticker.C {
-			for _, shard := range s.storage.shards {
-				checked, expired := shard.cleanSample()
-
-				if expired > 0 {
-					fmt.Printf("Cleaner: checked=%d expired=%d\n", checked, expired)
-				}
-			}
-		}
-	}()
+	for _, shard := range s.storage.shards {
+		go shard.startCleaner(ctx, interval)
+	}
 }
 
 func (s *TCPServer) Run() error {
@@ -129,6 +120,7 @@ func (s *TCPServer) Run() error {
 
 	s.listener = listener
 	defer listener.Close()
+
 	s.startCleaner()
 
 	fmt.Printf("TCP server started on %s\n", listener.Addr())

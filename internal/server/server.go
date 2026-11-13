@@ -19,6 +19,7 @@ type TCPServer struct {
 	config   Config
 	storage  *Storage
 	listener net.Listener
+	metrics  *Metrics
 }
 
 type Storage struct {
@@ -49,7 +50,8 @@ func NewTCPServer(config Config) *TCPServer {
 	}
 
 	return &TCPServer{
-		config: config,
+		config:  config,
+		metrics: NewMetrics(),
 		storage: &Storage{
 			shards: shards,
 		},
